@@ -1,0 +1,26 @@
+{
+  "manifest_version": 3,
+  "name": "Fleet Side Panel Scraper",
+  "version": "2.0",
+  "description": "Advanced vehicle data scraper with side panel UI and concurrent tabs.",
+  "permissions": [
+    "storage",
+    "tabs",
+    "scripting",
+    "downloads",
+    "activeTab",
+    "sidePanel"
+  ],
+  "host_permissions": [
+    "https://dash.packzy.com/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "side_panel": {
+    "default_path": "sidepanel.html"
+  },
+  "action": {
+    "default_title": "Open Fleet Scraper"
+  }
+}
