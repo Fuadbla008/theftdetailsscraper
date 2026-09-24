@@ -69,7 +69,7 @@ document.getElementById('btnStop').addEventListener('click', () => {
 
 document.getElementById('btnSaveMapping').addEventListener('click', () => {
   const text = document.getElementById('mappingInput').value;
-  const maxTabs = parseInt(document.getElementById('maxTabs').value) || 10;
+  const maxTabs = parseInt(document.getElementById('maxTabs').value) || 2;
   const lines = text.split('\n');
   const mapping = {};
 
@@ -87,7 +87,10 @@ document.getElementById('btnSaveMapping').addEventListener('click', () => {
 
 document.getElementById('btnExportCSV').addEventListener('click', () => {
   if (scrapedData.length === 0) return alert('No data to export!');
-  const headers = ["Vehicle Number", "ID", "Stolen Fuel", "Theft Date", "Theft Time", "Model", "Operating Hub", "Coordinates"];
+  const headers = [
+    "Vehicle Number", "ID", "Stolen Fuel", "Theft Date", "Theft Time",
+    "Model", "Operating Hub", "Coordinates", "Location"
+  ];
   const csvRows = [headers.join(',')];
   scrapedData.forEach(row => {
     csvRows.push(headers.map(h => `"${String(row[h] || '').replace(/"/g, '""')}"`).join(','));
@@ -119,7 +122,7 @@ function toggleButtons(running, paused) {
 function renderTable() {
   const tbody = document.getElementById('dataTableBody');
   if (scrapedData.length === 0) {
-    tbody.innerHTML = '<tr><td colspan="6" style="text-align:center; padding:10px; color:#555;">No data scraped yet.</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="7" style="text-align:center; padding:10px; color:#555;">No data scraped yet.</td></tr>';
     return;
   }
   tbody.innerHTML = scrapedData.map(row => `
@@ -130,6 +133,7 @@ function renderTable() {
       <td style="color:var(--text-muted);">${row["Operating Hub"] || '-'}</td>
       <td style="color:var(--danger);">${row["Stolen Fuel"] || '-'}</td>
       <td style="color:#00ff88; font-family:monospace; font-size:10px;">${row["Coordinates"] || '-'}</td>
+      <td style="font-size:10px; max-width:200px; overflow:hidden; text-overflow:ellipsis;">${row["Location"] || '-'}</td>
     </tr>
   `).join('');
 }

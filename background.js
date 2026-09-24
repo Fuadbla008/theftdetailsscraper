@@ -3,9 +3,9 @@ let isPaused = false;
 let queue = [];
 let results = [];
 let activeTabs = 0;
-let MAX_CONCURRENT_TABS = 10;
+let MAX_CONCURRENT_TABS = 2;
 let mapping = {};
-let listTabId = null;
+let lastNominatimTime = 0;
 
 chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true }).catch(console.error);
 
@@ -27,17 +27,82 @@ chrome.runtime.onMessage.addListener((message) => {
   else if (message.action === 'stopScraping') stopScraping();
 });
 
+// ═══════════════════════════════════════════════
+// REVERSE GEOCODING (Nominatim)
+// ═══════════════════════════════════════════════
+async function reverseGeocode(coords) {
+  if (!coords || coords.trim() === '') return "";
+
+  try {
+    const m = coords.match(/([-\d.]+)\s*,\s*([-\d.]+)/);
+    if (!m) return "";
+
+    const lat = m[1];
+    const lon = m[2];
+
+    // Nominatim rate limit: 1 request per second
+    const now = Date.now();
+    const timeSinceLast = now - lastNominatimTime;
+    if (timeSinceLast < 1100) {
+      await new Promise(r => setTimeout(r, 1100 - timeSinceLast));
+    }
+    lastNominatimTime = Date.now();
+
+    const url = `https://nominatim.openstreetmap.org/reverse?format=json&lat=${lat}&lon=${lon}&zoom=18&addressdetails=1&accept-language=en`;
+
+    const res = await fetch(url, {
+      headers: {
+        'User-Agent': 'FleetScraper/3.0 (Chrome Extension)'
+      }
+    });
+
+    if (!res.ok) {
+      logMessage(`  ⚠️ Nominatim HTTP ${res.status}`);
+      return "";
+    }
+
+    const data = await res.json();
+    const addr = data.address || {};
+    const parts = [];
+
+    if (addr.amenity) parts.push(addr.amenity);
+    else if (addr.shop) parts.push(addr.shop);
+    else if (addr.building) parts.push(addr.building);
+    else if (addr.tourism) parts.push(addr.tourism);
+    else if (addr.leisure) parts.push(addr.leisure);
+
+    if (addr.road) parts.push(addr.road);
+    else if (addr.pedestrian) parts.push(addr.pedestrian);
+    else if (addr.house_number && addr.road) parts.push(addr.house_number);
+
+    if (addr.suburb) parts.push(addr.suburb);
+    if (addr.city || addr.town || addr.village) parts.push(addr.city || addr.town || addr.village);
+    if (addr.state) parts.push(addr.state);
+
+    if (parts.length > 0) return parts.join(', ');
+
+    return data.display_name || "";
+
+  } catch (e) {
+    logMessage(`  ⚠️ Geocode error: ${e.message}`);
+    return "";
+  }
+}
+
+// ═══════════════════════════════════════════════
+// MAIN START
+// ═══════════════════════════════════════════════
 async function startScraping() {
   if (isRunning) return;
   isRunning = true; isPaused = false; queue = []; results = []; activeTabs = 0;
-  
+
   chrome.storage.local.set({ fleetData: [] });
   sendStatusUpdate();
   logMessage("🚀 Starting Scraping Process v3...");
 
   const storageData = await chrome.storage.local.get(['mapping', 'maxTabs']);
   mapping = storageData.mapping || {};
-  MAX_CONCURRENT_TABS = storageData.maxTabs || 10;
+  MAX_CONCURRENT_TABS = storageData.maxTabs || 2;
 
   if (Object.keys(mapping).length === 0) {
     logMessage("⚠️ No mapping found.");
@@ -50,7 +115,6 @@ async function startScraping() {
     logMessage("❌ Error: Active tab is not Packzy dashboard.");
     stopScraping(); return;
   }
-  listTabId = tab.id;
 
   // ═══════════════════════════════════════════════
   // PHASE 1: লিস্ট পেজ থেকে সব ডেটা + Coordinates
@@ -59,11 +123,10 @@ async function startScraping() {
   try {
     const injectionResults = await chrome.scripting.executeScript({
       target: { tabId: tab.id },
-      function: scrapeListPageWithCoordinates,
-      args: [MAX_CONCURRENT_TABS]
+      function: scrapeListPageWithCoordinates
     });
     const listData = injectionResults[0].result;
-    
+
     if (!listData || listData.length === 0) {
       logMessage("❌ No vehicle data found.");
       stopScraping(); return;
@@ -71,14 +134,16 @@ async function startScraping() {
     logMessage(`✅ Found ${listData.length} vehicles with coordinates.`);
 
     // ═══════════════════════════════════════════════
-    // PHASE 2: Queue তৈরি (Fetch + Model/Hub)
+    // PHASE 2: Queue তৈরি
     // ═══════════════════════════════════════════════
     listData.forEach(item => {
       const matchedId = mapping[item.vehicleNumber] || "Not Found";
       let resultObj = {
         "Vehicle Number": item.vehicleNumber, "ID": matchedId,
         "Stolen Fuel": item.stolenFuel, "Theft Date": item.theftDate, "Theft Time": item.theftTime,
-        "Model": "", "Operating Hub": "", "Coordinates": item.coordinates || ""
+        "Model": "", "Operating Hub": "",
+        "Coordinates": item.coordinates || "",
+        "Location": ""
       };
 
       if (matchedId !== "Not Found") {
@@ -88,7 +153,7 @@ async function startScraping() {
       }
     });
 
-    logMessage(`📋 Phase 2: Queue with ${queue.length} items. Fetching Model & Hub...`);
+    logMessage(`📋 Phase 2: Queue with ${queue.length} items. Fetching Model & Hub + Geocoding...`);
     saveResults();
     processQueue();
 
@@ -113,46 +178,53 @@ async function processQueue() {
   }
 }
 
-// ⭐ Phase 2: Fetch করে Model + Hub বের করা ⭐
+// ═══════════════════════════════════════════════
+// PHASE 2: Fetch + Geocode per Item
+// ═══════════════════════════════════════════════
 async function processItem(item) {
   try {
-    const response = await fetch(item.url, { 
+    // ═══ STEP 1: Fetch করে Model + Hub ═══
+    const response = await fetch(item.url, {
       credentials: 'include',
       headers: { 'Accept': 'text/html' }
     });
-    
-    if (!response.ok) {
-      logMessage(`  ⚠️ [${item.id}] HTTP ${response.status}`);
-      results.push(item.data);
-      saveResults();
-      return;
+
+    if (response.ok) {
+      const html = await response.text();
+      let model = 'N/A', hub = 'N/A';
+
+      const metaIndex = html.indexOf('vs-head__meta');
+      if (metaIndex !== -1) {
+        const chunk = html.substring(metaIndex, metaIndex + 5000);
+
+        const aMatch = chunk.match(/<a[^>]*>([\s\S]*?)<\/a>/i);
+        if (aMatch) model = aMatch[1].replace(/<[^>]*>/g, '').replace(/&nbsp;/g, ' ').trim();
+
+        const hubMatch = chunk.match(/<span[^>]*>\s*<i[^>]*bi-building[^>]*>\s*<\/i>\s*([\s\S]*?)<\/span>/i);
+        if (hubMatch) hub = hubMatch[1].replace(/<[^>]*>/g, '').replace(/&nbsp;/g, ' ').trim();
+      }
+
+      item.data["Model"] = model !== 'N/A' ? model : "";
+      item.data["Operating Hub"] = hub !== 'N/A' ? hub : "";
     }
 
-    const html = await response.text();
-    
-    let model = 'N/A', hub = 'N/A';
-
-    const metaIndex = html.indexOf('vs-head__meta');
-    if (metaIndex !== -1) {
-      const chunk = html.substring(metaIndex, metaIndex + 5000);
-      
-      const aMatch = chunk.match(/<a[^>]*>([\s\S]*?)<\/a>/i);
-      if (aMatch) model = aMatch[1].replace(/<[^>]*>/g, '').replace(/&nbsp;/g, ' ').trim();
-      
-      const hubMatch = chunk.match(/<span[^>]*>\s*<i[^>]*bi-building[^>]*>\s*<\/i>\s*([\s\S]*?)<\/span>/i);
-      if (hubMatch) hub = hubMatch[1].replace(/<[^>]*>/g, '').replace(/&nbsp;/g, ' ').trim();
+    // ═══ STEP 2: Coordinate → Location ═══
+    if (item.data["Coordinates"]) {
+      const location = await reverseGeocode(item.data["Coordinates"]);
+      item.data["Location"] = location || "";
+      logMessage(`  📍 [${item.id}] ${item.data["Vehicle Number"]} | ${item.data["Coordinates"]}`);
+      if (location) logMessage(`     → ${location.substring(0, 80)}`);
+    } else {
+      item.data["Location"] = "";
+      logMessage(`  ✅ [${item.id}] ${item.data["Vehicle Number"]} | ${item.data["Model"]}`);
     }
 
-    item.data["Model"] = model !== 'N/A' ? model : "";
-    item.data["Operating Hub"] = hub !== 'N/A' ? hub : "";
-
-    logMessage(`  ✅ [${item.id}] ${item.data["Vehicle Number"]} | ${model} | ${hub} | ${item.data["Coordinates"]}`);
-    
     results.push(item.data);
     saveResults();
 
   } catch (error) {
     logMessage(`  ❌ [${item.id}] ${error.message}`);
+    item.data["Location"] = item.data["Location"] || "";
     results.push(item.data);
     saveResults();
   } finally {
@@ -183,19 +255,19 @@ function sendStatusUpdate() {
   chrome.runtime.sendMessage({ action: 'statusUpdate', isRunning, isPaused });
 }
 
-// ==========================================
-// ⭐ LIST PAGE SCRAPER WITH COORDINATES ⭐
-// ==========================================
-async function scrapeListPageWithCoordinates(maxConcurrent) {
+// ═══════════════════════════════════════════════
+// PHASE 1 SCRAPER (List Page + Coordinates)
+// ═══════════════════════════════════════════════
+async function scrapeListPageWithCoordinates() {
   const rows = document.querySelectorAll('table.table tbody tr');
   const data = [];
-  
+
   function formatVehicleNumber(raw) {
     if (!raw) return "";
     let normalized = raw.toLowerCase().replace(/[-_]/g, '-');
     let parts = normalized.split('-');
     return parts.map((part, index) => {
-      if (index === 0) return 'DHM'; 
+      if (index === 0) return 'DHM';
       if (part === 'ma' || part === 'm') return 'MA';
       if (part === 'a' || part === 'au') return 'AU';
       if (part === 'u') return 'U';
@@ -204,11 +276,11 @@ async function scrapeListPageWithCoordinates(maxConcurrent) {
     }).join('-');
   }
 
-  // ═══ Step 1: প্রথমে সব ডেটা কালেক্ট করা ═══
+  // ═══ Step 1: সব ডেটা কালেক্ট ═══
   rows.forEach((row, idx) => {
     const tds = row.querySelectorAll('td');
     if (tds.length < 3) return;
-    
+
     let deviceId = "", vehicleNum = "";
     const mutedDiv = tds[0].querySelector('.text-muted');
     if (mutedDiv) {
@@ -216,7 +288,7 @@ async function scrapeListPageWithCoordinates(maxConcurrent) {
       deviceId = parts[0] || "";
       if (parts.length > 1) vehicleNum = formatVehicleNumber(parts[1]);
     }
-    
+
     let theftDate = "", theftTime = "";
     const htmlContent = tds[2].innerHTML;
     if (htmlContent.includes('<br>')) {
@@ -224,7 +296,7 @@ async function scrapeListPageWithCoordinates(maxConcurrent) {
       theftDate = parts[0].replace(/["']/g, '').trim();
       theftTime = parts[1].replace(/["']/g, '').trim();
     }
-    
+
     data.push({
       deviceId: deviceId,
       vehicleNumber: vehicleNum,
@@ -237,42 +309,38 @@ async function scrapeListPageWithCoordinates(maxConcurrent) {
   });
 
   // ═══ Step 2: প্রতিটি Row-তে ক্লিক করে Coordinate বের করা ═══
-  // একটার পর একটা (serial) ক্লিক করব — coordinate popup একটাই থাকে
   for (let i = 0; i < data.length; i++) {
-    if (i > 0) await new Promise(r => setTimeout(r, 400)); // popup close হতে সময় দাও
-    
+    if (i > 0) await new Promise(r => setTimeout(r, 400));
+
     try {
       const targetRow = rows[data[i].rowIndex];
       if (!targetRow) continue;
-      
-      // আগের popup থাকলে বন্ধ করা
+
+      // আগের popup থাকলে বন্ধ
       const oldPopup = document.querySelector('.leaflet-popup-close-button');
       if (oldPopup) oldPopup.click();
-      
       await new Promise(r => setTimeout(r, 200));
-      
-      // Row-তে ক্লিক করা
+
+      // Row-তে ক্লিক
       targetRow.click();
       targetRow.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
-      
-      // Popup ওপেন হওয়ার জন্য অপেক্ষা
+
+      // Popup থেকে coord বের করা
       let coord = null;
       for (let attempt = 0; attempt < 20; attempt++) {
         await new Promise(r => setTimeout(r, 250));
-        
-        // Coords বের করা — Leaflet Popup এর ভেতরের টেবিল থেকে
+
         const popup = document.querySelector('.leaflet-popup-content');
         if (popup) {
           const tds = popup.querySelectorAll('td');
           for (let j = 0; j < tds.length; j++) {
             const cellText = tds[j].textContent.trim().toLowerCase();
-            if (cellText === 'coords' && tds[j+1]) {
-              const coordText = tds[j+1].textContent.trim();
+            if (cellText === 'coords' && tds[j + 1]) {
+              const coordText = tds[j + 1].textContent.trim();
               const m = coordText.match(/([-\d.]+)\s*,\s*([-\d.]+)/);
               if (m) { coord = `${m[1]}, ${m[2]}`; break; }
             }
           }
-          // ব্যাকআপ: সরাসরি পুরো popup এর HTML থেকে lat,lng প্যাটার্ন
           if (!coord) {
             const m = popup.innerHTML.match(/(2[0-9]\.\d{3,})\s*,\s*(8[0-9]\.\d{3,}|9[0-9]\.\d{3,})/);
             if (m) coord = `${m[1]}, ${m[2]}`;
@@ -280,12 +348,12 @@ async function scrapeListPageWithCoordinates(maxConcurrent) {
           if (coord) break;
         }
       }
-      
+
       if (coord) data[i].coordinates = coord;
     } catch (e) {
-      // silently continue
+      // silent continue
     }
   }
-  
+
   return data;
 }
