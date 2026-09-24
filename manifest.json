@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "Fleet Side Panel Scraper",
-  "version": "2.0",
-  "description": "Advanced vehicle data scraper with side panel UI and concurrent tabs.",
+  "version": "3.0",
+  "description": "Advanced vehicle data scraper with coordinates.",
   "permissions": [
     "storage",
     "tabs",

@@ -2,7 +2,6 @@ let scrapedData = [];
 let isRunning = false;
 let isPaused = false;
 
-// Load data on open
 document.addEventListener('DOMContentLoaded', () => {
   chrome.storage.local.get(['fleetData', 'mapping', 'logs', 'maxTabs'], (result) => {
     if (result.fleetData) {
@@ -27,7 +26,6 @@ document.addEventListener('DOMContentLoaded', () => {
   });
 });
 
-// Listen for background messages
 chrome.runtime.onMessage.addListener((message) => {
   if (message.action === 'updateProgress') {
     document.getElementById('progressBar').style.width = message.percent + '%';
@@ -52,7 +50,6 @@ chrome.runtime.onMessage.addListener((message) => {
   }
 });
 
-// Buttons
 document.getElementById('btnStart').addEventListener('click', () => {
   chrome.runtime.sendMessage({ action: 'startScraping' });
   toggleButtons(true, false);
@@ -70,10 +67,9 @@ document.getElementById('btnStop').addEventListener('click', () => {
   toggleButtons(false, false);
 });
 
-// Save Config (Mapping + Max Tabs)
 document.getElementById('btnSaveMapping').addEventListener('click', () => {
   const text = document.getElementById('mappingInput').value;
-  const maxTabs = parseInt(document.getElementById('maxTabs').value) || 5;
+  const maxTabs = parseInt(document.getElementById('maxTabs').value) || 10;
   const lines = text.split('\n');
   const mapping = {};
 
@@ -89,10 +85,9 @@ document.getElementById('btnSaveMapping').addEventListener('click', () => {
   });
 });
 
-// Exports
 document.getElementById('btnExportCSV').addEventListener('click', () => {
   if (scrapedData.length === 0) return alert('No data to export!');
-  const headers = ["Vehicle Number", "ID", "Stolen Fuel", "Theft Date", "Theft Time", "Model", "Operating Hub", "Engine No", "Chassis No", "Last Checkup"];
+  const headers = ["Vehicle Number", "ID", "Stolen Fuel", "Theft Date", "Theft Time", "Model", "Operating Hub", "Coordinates"];
   const csvRows = [headers.join(',')];
   scrapedData.forEach(row => {
     csvRows.push(headers.map(h => `"${String(row[h] || '').replace(/"/g, '""')}"`).join(','));
@@ -113,7 +108,6 @@ document.getElementById('btnClearData').addEventListener('click', () => {
   }
 });
 
-// Helpers
 function toggleButtons(running, paused) {
   const start = document.getElementById('btnStart'), pause = document.getElementById('btnPause');
   const resume = document.getElementById('btnResume'), stop = document.getElementById('btnStop');
@@ -132,10 +126,10 @@ function renderTable() {
     <tr>
       <td style="color:var(--accent); font-weight:600;">${row["Vehicle Number"] || '-'}</td>
       <td style="color:var(--text-muted);">${row["ID"] || 'Not Found'}</td>
-      <td style="color:var(--danger);">${row["Stolen Fuel"] || '-'}</td>
       <td>${row["Model"] || '-'}</td>
       <td style="color:var(--text-muted);">${row["Operating Hub"] || '-'}</td>
-      <td>${row["Engine No"] || '-'}</td>
+      <td style="color:var(--danger);">${row["Stolen Fuel"] || '-'}</td>
+      <td style="color:#00ff88; font-family:monospace; font-size:10px;">${row["Coordinates"] || '-'}</td>
     </tr>
   `).join('');
 }
