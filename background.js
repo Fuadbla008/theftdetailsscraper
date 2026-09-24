@@ -73,7 +73,6 @@ async function reverseGeocode(coords) {
 
     if (addr.road) parts.push(addr.road);
     else if (addr.pedestrian) parts.push(addr.pedestrian);
-    else if (addr.house_number && addr.road) parts.push(addr.house_number);
 
     if (addr.suburb) parts.push(addr.suburb);
     if (addr.city || addr.town || addr.village) parts.push(addr.city || addr.town || addr.village);
@@ -134,9 +133,20 @@ async function startScraping() {
     logMessage(`✅ Found ${listData.length} vehicles with coordinates.`);
 
     // ═══════════════════════════════════════════════
-    // PHASE 2: Queue তৈরি
+    // PHASE 2: Queue তৈরি (Fuel < 5L বাদ)
     // ═══════════════════════════════════════════════
+    let skippedCount = 0;
+
     listData.forEach(item => {
+      // ⭐ Fuel parsing & filter (5L এর কম হলে বাদ)
+      const fuelMatch = String(item.stolenFuel).match(/([\d.]+)/);
+      const fuelValue = fuelMatch ? parseFloat(fuelMatch[1]) : 0;
+
+      if (fuelValue < 5) {
+        skippedCount++;
+        return; // Skip this item
+      }
+
       const matchedId = mapping[item.vehicleNumber] || "Not Found";
       let resultObj = {
         "Vehicle Number": item.vehicleNumber, "ID": matchedId,
@@ -152,6 +162,10 @@ async function startScraping() {
         results.push(resultObj);
       }
     });
+
+    if (skippedCount > 0) {
+      logMessage(`🚫 Skipped ${skippedCount} vehicles with fuel < 5L.`);
+    }
 
     logMessage(`📋 Phase 2: Queue with ${queue.length} items. Fetching Model & Hub + Geocoding...`);
     saveResults();
